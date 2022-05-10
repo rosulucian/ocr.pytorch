@@ -1,4 +1,5 @@
 import cv2
+import time
 from math import *
 import numpy as np
 from detect.ctpn_predict import get_det_boxes
@@ -70,9 +71,13 @@ def charRec(img, text_recs, adjust=False):
 
     return results
 
-def ocr(image):
+def ocr(image, anchors):
     # detect
-    text_recs, img_framed, image = get_det_boxes(image)
+    t = time.time()
+    text_recs, img_framed, image = get_det_boxes(image, anchors)
+
+    print("total, it took {:.3f}s".format(time.time() - t))
+
     text_recs = sort_box(text_recs)
     result = charRec(image, text_recs)
     return result, img_framed

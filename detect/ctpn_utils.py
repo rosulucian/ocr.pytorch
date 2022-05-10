@@ -6,6 +6,7 @@
 #'''
 import numpy as np
 import cv2
+import torch
 from detect.config import *
 
 
@@ -75,6 +76,45 @@ def gen_anchor(featuresize, scale):
             anchor.append(base_anchor + [j, i, j, i])
     return np.array(anchor).reshape((-1, 4))
 
+def gen_anchor_torch(featuresize, scale, device):
+    """
+        gen base anchor from feature map [HXW][9][4]
+        reshape  [HXW][9][4] to [HXWX9][4]
+    """
+    heights = [11, 16, 23, 33, 48, 68, 97, 139, 198, 283]
+    widths = [16, 16, 16, 16, 16, 16, 16, 16, 16, 16]
+
+    # gen k=9 anchor size (h,w)
+    heights = torch.tensor(heights).reshape(len(heights), 1).to(device)
+    widths = torch.tensor(widths).reshape(len(widths), 1).to(device)
+
+    base_anchor = torch.tensor([0, 0, 15, 15]).to(device)
+    
+    # center x,y
+    xt = (base_anchor[0] + base_anchor[2]) * 0.5
+    yt = (base_anchor[1] + base_anchor[3]) * 0.5
+
+    # x1 y1 x2 y2
+    x1 = xt - widths * 0.5
+    y1 = yt - heights * 0.5
+    x2 = xt + widths * 0.5
+    y2 = yt + heights * 0.5
+
+    base_anchor = torch.hstack((x1, y1, x2, y2))
+
+    h, w = featuresize
+    shift_x = torch.arange(0, w) * scale
+    shift_y = torch.arange(0, h) * scale
+
+    # apply shift
+    anchors = []
+    for i in shift_y:
+        for j in shift_x:
+            shift = torch.tensor([j, i, j, i]).to(device)
+            anchors.append(base_anchor + shift)
+
+    return np.array(anchors).reshape((-1, 4))
+
 
 def cal_iou(box1, box1_area, boxes2, boxes2_area):
     """
@@ -132,20 +172,59 @@ def bbox_transfor_inv(anchor, regr):
     """
 
     Cya = (anchor[:, 1] + anchor[:, 3]) * 0.5
+    xt = (anchor[:, 0] + anchor[:, 2]) * 0.5
+
+
     ha = anchor[:, 3] - anchor[:, 1] + 1
 
     Vcx = regr[0, :, 0]
     Vhx = regr[0, :, 1]
 
     Cyx = Vcx * ha + Cya
+
     hx = np.exp(Vhx) * ha
-    xt = (anchor[:, 0] + anchor[:, 2]) * 0.5
+    # xt = (anchor[:, 0] + anchor[:, 2]) * 0.5
 
     x1 = xt - 16 * 0.5
     y1 = Cyx - hx * 0.5
+
     x2 = xt + 16 * 0.5
     y2 = Cyx + hx * 0.5
+
     bbox = np.vstack((x1, y1, x2, y2)).transpose()
+
+    # bbox = torch.stack([x1, y1, x2, y], dim=1)
+
+    return bbox
+
+def bbox_transfor_torch(anchor, regr):
+    """
+        return predict bbox
+    """
+
+    Cya = (anchor[:, 1] + anchor[:, 3]) * 0.5
+    xt = (anchor[:, 0] + anchor[:, 2]) * 0.5
+
+
+    ha = anchor[:, 3] - anchor[:, 1] + 1
+
+    Vcx = regr[0, :, 0]
+    Vhx = regr[0, :, 1]
+
+    Cyx = Vcx * ha + Cya
+
+    hx = torch.exp(Vhx) * ha
+    # xt = (anchor[:, 0] + anchor[:, 2]) * 0.5
+
+    x1 = xt - 16 * 0.5
+    y1 = Cyx - hx * 0.5
+
+    x2 = xt + 16 * 0.5
+    y2 = Cyx + hx * 0.5
+
+    # bbox = np.vstack((x1, y1, x2, y2)).transpose()
+
+    bbox = torch.stack([x1, y1, x2, y2], dim=1)
 
     return bbox
 
@@ -162,11 +241,22 @@ def clip_box(bbox, im_shape):
 
     return bbox
 
+def clip_box_torch(bbox, im_shape):
+    bbox = bbox.clamp(min=0)
+
+    # size = torch.cat(im_shape, dim=0)
+    size = torch.cat([torch.tensor(im_shape), torch.tensor(im_shape)], dim=0).cuda()
+
+    bbox = bbox.min(size)
+    return bbox
+
 
 def filter_bbox(bbox, minsize):
     ws = bbox[:, 2] - bbox[:, 0] + 1
     hs = bbox[:, 3] - bbox[:, 1] + 1
+    
     keep = np.where((ws >= minsize) & (hs >= minsize))[0]
+    
     return keep
 
 

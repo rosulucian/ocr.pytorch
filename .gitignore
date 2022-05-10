@@ -35,3 +35,9 @@
 *.thm
 .DS_Store
 *.bak
+
+*.pyc
+
+checkpoints/
+test_result/
+test_images/

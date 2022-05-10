@@ -5,27 +5,24 @@
 # @Author: Greg Gao(laygin)
 #'''
 import os
+import time
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 import cv2
 import numpy as np
 
-import time
-
 import torch
 import torch.nn.functional as F
 from detect.ctpn_model import CTPN_Model
-from detect.ctpn_utils import gen_anchor, gen_anchor_torch, bbox_transfor_inv, clip_box, filter_bbox,nms, TextProposalConnectorOriented, clip_box_torch, bbox_transfor_torch
+from detect.ctpn_utils import gen_anchor, bbox_transfor_inv, clip_box, filter_bbox,nms, TextProposalConnectorOriented
 from detect.ctpn_utils import resize
 from detect import config
 
 prob_thresh = 0.5
 height = 720
-
 gpu = True
 if not torch.cuda.is_available():
     gpu = False
 device = torch.device('cuda:0' if gpu else 'cpu')
-
 weights = os.path.join(config.checkpoints_dir, 'CTPN.pth')
 model = CTPN_Model()
 model.load_state_dict(torch.load(weights, map_location=device)['model_state_dict'])
@@ -39,52 +36,53 @@ def dis(image):
     cv2.destroyAllWindows()
 
 
-def get_det_boxes(image, anchors, display = False, expand = True):
+def get_det_boxes(image,display = False, expand = True):
     image = resize(image, height=height)
-
     image_r = image.copy()
     image_c = image.copy()
-
     h, w = image.shape[:2]
-
     image = image.astype(np.float32) - config.IMAGE_MEAN
     image = torch.from_numpy(image.transpose(2, 0, 1)).unsqueeze(0).float()
 
     with torch.no_grad():
         t = time.time()
-        
+       
         image = image.to(device)
-
-        print("image to device {:.3f}s".format(time.time() - t))
-
         cls, regr = model(image)
+       
+        print("inference, it took {:.3f}s".format(time.time() - t))
+        
+        # t = time.time()
+        
+        cls_prob = F.softmax(cls, dim=-1).cpu().numpy()
+        regr = regr.cpu().numpy()
+        anchor = gen_anchor((int(h / 16), int(w / 16)), 16)
 
-        print("inference {:.3f}s".format(time.time() - t))
+        print("inference, it took {:.3f}s".format(time.time() - t))
 
-        cls_prob = F.softmax(cls, dim=-1)
+        fg = np.where(cls_prob[0, :, 1] > prob_thresh)[0]
+        anchor = anchor[fg, :]
+        select_regr = regr[:, fg, :]
+        
+        print("anchor, it took {:.3f}s".format(time.time() - t))
+        
+        bbox = bbox_transfor_inv(anchor, select_regr)
+        # bbox = bbox_transfor_inv(anchor, regr)
+        bbox = clip_box(bbox, [h, w])
+        # print(bbox.shape)
 
-        # print("anchors {:.3f}s".format(time.time() - t))
-
-        bbox = bbox_transfor_torch(anchors, regr)
-
-        print("anchors {:.3f}s".format(time.time() - t))
-
-        bbox = clip_box_torch(bbox, [h, w])
-
-        fg = torch.where(cls_prob[:,:,1] > prob_thresh)[1]
-
-        select_anchor = bbox[fg, :]
+        # fg = np.where(cls_prob[0, :, 1] > prob_thresh)[0]
+        # print(np.max(cls_prob[0, :, 1]))
+        # select_anchor = bbox[fg, :]
+        select_anchor = bbox
         select_score = cls_prob[0, fg, 1]
-        # select_anchor = select_anchor.astype(np.int32)
-
-        print("bbox {:.3f}s".format(time.time() - t))
-
-        select_anchor = select_anchor.cpu().numpy()
-        select_score = select_score.cpu().numpy()
-
+        select_anchor = select_anchor.astype(np.int32)
+        # print(select_anchor.shape)
         keep_index = filter_bbox(select_anchor, 16)
 
-        print("bbox2 {:.3f}s".format(time.time() - t))
+        print("bbox, it took {:.3f}s".format(time.time() - t))
+
+        # t = time.time()
 
         # nms
         select_anchor = select_anchor[keep_index]
@@ -92,15 +90,18 @@ def get_det_boxes(image, anchors, display = False, expand = True):
         select_score = np.reshape(select_score, (select_score.shape[0], 1))
         nmsbox = np.hstack((select_anchor, select_score))
         keep = nms(nmsbox, 0.3)
+
+        # print("Mission complete, it took {:.3f}s".format(time.time() - t))
+        
         # print(keep)
         select_anchor = select_anchor[keep]
         select_score = select_score[keep]
 
-        print("nms {:.3f}s".format(time.time() - t))
-
         # text line-
         textConn = TextProposalConnectorOriented()
         text = textConn.get_text_lines(select_anchor, select_score, [h, w])
+
+        print("NMS, it took {:.3f}s".format(time.time() - t))
 
         # expand text
         if expand:
@@ -110,6 +111,7 @@ def get_det_boxes(image, anchors, display = False, expand = True):
                 text[idx][4] = max(text[idx][4] - 10, 0)
                 text[idx][6] = min(text[idx][6] + 10, w - 1)
 
+        print("expand, it took {:.3f}s".format(time.time() - t))
 
         # print(text)
         if display:
@@ -135,11 +137,12 @@ def get_det_boxes(image, anchors, display = False, expand = True):
                             cv2.LINE_AA)
             # dis(image_c)
         # print(text)
-        return text, image_c, image_r
+
+        print("display, it took {:.3f}s".format(time.time() - t))
+        return text,image_c,image_r
 
 if __name__ == '__main__':
     img_path = 'images/t1.png'
     image = cv2.imread(img_path)
-    # TODO: add anchors
-    text,image = get_det_boxes(image, anchors)
+    text,image = get_det_boxes(image)
     dis(image)
